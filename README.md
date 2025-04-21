@@ -1,9 +1,4 @@
-# FastAPI PyTorch Neo4j Service
-
-This project provides a skeleton structure for a FastAPI application designed to:
-1.  Serve API endpoints.
-2.  Integrate with a PyTorch model for inference.
-3.  Connect to and query a Neo4j graph database.
+# Tolki GPT
 
 ## Prerequisites
 
@@ -16,13 +11,13 @@ This project provides a skeleton structure for a FastAPI application designed to
 1.  **Clone the repository:**
     ```bash
     git clone <your-repo-url>
-    cd fastapi-pytorch-neo4j
+    cd tolkigpt
     ```
 
 2.  **Create and activate the Conda environment:**
     ```bash
     conda env create -f environment.yml
-    conda activate fastapi-pytorch-neo4j-env
+    conda activate tolkigpt
     ```
     *(This might take a few minutes, especially for PyTorch)*
 
