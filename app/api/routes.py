@@ -1,0 +1,47 @@
+# app/api/routes.py
+from fastapi import APIRouter, HTTPException, utils
+
+from app.db.models import TextInput
+import app.utils.process_text as utils
+
+# Create a router instance
+router = APIRouter()
+
+@router.get("/health")
+async def health_check():
+    """
+    Simple health check endpoint.
+    Returns a status message indicating the service is running.
+    """
+    return {"status": "ok", "message": "Service is running"}
+
+@router.post("/extract-graph")
+async def process_and_ingest_text(data: TextInput):
+    """
+    Receives text, processes it to extract entities and relationships,
+    and inserts/updates them into the Neo4j database.
+    """
+    if not utils.NLP or not utils.FC_MODEL:
+        raise HTTPException(status_code=503, detail="NLP models are not available.")
+    if not utils.NEO4J_DRIVER:
+         raise HTTPException(status_code=503, detail="Database connection is not available.")
+
+    try:
+        success = utils.process_text_and_insert_graph(
+            text=data.text,
+            book_title=data.book_title,
+            book_section=data.book_section
+            # Uses the global driver setup during startup
+        )
+
+        if success:
+            return {"message": "Text processed and graph updated successfully (or no updates needed)."}
+        else:
+            # Log the error on the server side via utils.py logging
+            raise HTTPException(status_code=500, detail="Failed to process text or update graph. Check server logs.")
+
+    except Exception as e:
+        # Log the exception details on the server
+        utils.log.exception(f"Unhandled error during /process-text/ endpoint: {e}")
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
+
