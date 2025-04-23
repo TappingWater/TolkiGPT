@@ -59,10 +59,34 @@ async def inference_paragraph(data: TextInput):
     try:
         print(f"Received inference request with data: {data}")
         next_paragraph = generate_next_paragraph(data.text, tokenizer, model, device)
-        print("cedced_",data.text)
         return {"generated_paragraph": next_paragraph}
     except Exception as e:
         utils.log.exception(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate paragraph.")
     
+    
+    
+@router.post("/generate-chapter")
+async def inference_chapter(data: TextInput):
+    from app.utils.inference import generate_next_paragraph, load_model
+    import random
 
+    tokenizer, model, device = load_model("mrcedric98/falcon-rw-1b-finetuned") 
+
+    try:
+        print(f"Received chapter generation request with data: {data}")
+        paragraph_count = random.randint(3, 5)
+        generated_paragraphs = []
+        current_input = data.text.strip()
+
+        for _ in range(paragraph_count):
+            next_paragraph = generate_next_paragraph(current_input, tokenizer, model, device)
+            generated_paragraphs.append(next_paragraph)
+            current_input = next_paragraph  # Use the last paragraph as input for the next
+
+        full_chapter = "\n\n".join(generated_paragraphs)
+        return {"generated_chapter": full_chapter}
+
+    except Exception as e:
+        utils.log.exception(f"Chapter inference error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate chapter.")

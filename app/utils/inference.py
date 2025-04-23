@@ -16,7 +16,12 @@ def load_model(model_name):
 
 # Inference function
 def generate_next_paragraph(input_paragraph, tokenizer, model, device):
-    prompt = f"Continue the story with a new paragraph based on the following content:\n{input_paragraph.strip()}"
+    prompt = (
+        "You are a creative writer. Read the paragraph below carefully and continue the story "
+        "with a coherent and engaging next paragraph that maintains the same tone, style, and characters. "
+        "Only write the next paragraph, and do not repeat or summarize the input.\n\n"
+        f"Previous paragraph:\n{input_paragraph.strip()}\n\nNext paragraph:"
+    )
 
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
     input_ids = inputs["input_ids"].to(device)
