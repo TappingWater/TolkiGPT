@@ -54,11 +54,12 @@ async def process_and_ingest_text(data: TextInput):
 async def inference_paragraph(data: TextInput):
     from app.utils.inference import generate_next_paragraph, load_model
 
-    tokenizer, model, device = load_model("./app/models/falcon_v5_full") 
+    tokenizer, model, device = load_model("mrcedric98/falcon-rw-1b-finetuned") 
     
     try:
         print(f"Received inference request with data: {data}")
         next_paragraph = generate_next_paragraph(data.text, tokenizer, model, device)
+        print("cedced_",data.text)
         return {"generated_paragraph": next_paragraph}
     except Exception as e:
         utils.log.exception(f"Inference error: {e}")

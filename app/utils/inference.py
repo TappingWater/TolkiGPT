@@ -1,15 +1,17 @@
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from torch.cuda.amp import autocast
+from peft import PeftModel
 
 # Load model and tokenizer globally (optional: wrap into a function if needed)
-def load_model(model_path):
+def load_model(model_name):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.float16)
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
     model.to(device)
     model.eval()
-    model = torch.compile(model)
+    
     return tokenizer, model, device
 
 # Inference function
