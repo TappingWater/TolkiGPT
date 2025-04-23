@@ -3,6 +3,8 @@ from fastapi import APIRouter, HTTPException, utils
 
 from app.db.models import TextInput
 import app.utils.process_text as utils
+import app.utils.inference as inf
+import os
 
 # Create a router instance
 router = APIRouter()
@@ -44,4 +46,22 @@ async def process_and_ingest_text(data: TextInput):
         # Log the exception details on the server
         utils.log.exception(f"Unhandled error during /process-text/ endpoint: {e}")
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+    
+    
+ # Adjust path as needed
+
+@router.post("/generate-paragraph")
+async def inference_paragraph(data: TextInput):
+    from app.utils.inference import generate_next_paragraph, load_model
+
+    tokenizer, model, device = load_model("./app/models/falcon_v5_full") 
+    
+    try:
+        print(f"Received inference request with data: {data}")
+        next_paragraph = generate_next_paragraph(data.text, tokenizer, model, device)
+        return {"generated_paragraph": next_paragraph}
+    except Exception as e:
+        utils.log.exception(f"Inference error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate paragraph.")
+    
 
