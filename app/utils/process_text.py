@@ -1,410 +1,282 @@
-# utils.py
-
 import spacy
-import torch
 from fastcoref import FCoref
-import nltk
-from nltk.corpus import wordnet
+from typing import Dict, List, Tuple, Optional, Any
+import re
 import logging
-from neo4j import GraphDatabase, Driver
-from neo4j.exceptions import AuthError, ServiceUnavailable # Neo4j Exceptions
-from typing import List, Dict, Tuple, Optional, Any
-import re # Import re for sanitizing relationship types
+from app.db import execute_query # Assuming your Neo4j utils are in app.db
+from spacy.tokens import Token, Span, Doc
 
-# --- Configuration, Logging, Globals, Model Loading, Neo4j Setup/Close, WordNet ---
-# (Keep these sections as they were - ensure NEO4J_DRIVER is global)
 # --- Configuration ---
 SPACY_MODEL_NAME = "en_core_web_lg"
-FASTCOREF_MODEL_NAME = "biu-nlp/f-coref"
+FASTCOREF_MODEL_NAME = "biu-nlp/f-coref" 
 
-# --- Logging Setup ---
+# --- Logging ---
+# Ensure logging is configured elsewhere or here
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# --- Global Variables ---
-NLP = None
-FC_MODEL = None
-NEO4J_DRIVER = None
+# --- Define the Class ---
+class TextProcessor:
+    # --- Load Models as Class Attributes ---
+    try:
+        log.info(f"Loading spaCy model '{SPACY_MODEL_NAME}'...")
+        # Assign to class attribute 'nlp'
+        nlp: spacy.Language = spacy.load(SPACY_MODEL_NAME)
+        log.info("spaCy model loaded.")
 
-# --- Model Loading ---
-def load_models():
-    # (Implementation remains the same)
-    global NLP, FC_MODEL
-    log.info(f"Loading spaCy model: {SPACY_MODEL_NAME}")
-    try: NLP = spacy.load(SPACY_MODEL_NAME); log.info("spaCy model loaded successfully.")
-    except OSError: log.error(f"spaCy model '{SPACY_MODEL_NAME}' not found."); return False
-    except Exception as e: log.error(f"Error loading spaCy model '{SPACY_MODEL_NAME}': {e}"); return False
-    log.info(f"Initializing FastCoref model: {FASTCOREF_MODEL_NAME}")
-    device = 'cpu';
-    if torch.backends.mps.is_available():
-        try: torch.tensor([1], device='mps'); device = 'mps'; log.info("Attempting to use MPS.")
-        except Exception: log.warning("MPS not available/functional, using CPU."); device = 'cpu'
-    elif torch.cuda.is_available(): device = 'cuda:0'; log.info("Attempting to use CUDA GPU.")
-    try: FC_MODEL = FCoref(model_name_or_path=FASTCOREF_MODEL_NAME, device=device); log.info(f"FastCoref model '{FASTCOREF_MODEL_NAME}' initialized on {device.upper()}.")
+        log.info(f"Loading FastCoref model '{FASTCOREF_MODEL_NAME}'...")
+        # Assign to class attribute 'fc_model'
+        # Consider device='cuda' if GPU is available and configured
+        fc_model = FCoref(model_name_or_path=FASTCOREF_MODEL_NAME, device='cpu')
+        log.info("FastCoref model loaded.")
+        MODELS_LOADED = True
+    except ImportError as ie:
+         log.exception(f"FATAL: Missing libraries. spaCy or fastcoref not installed properly? {ie}")
+         MODELS_LOADED = False
+         # Depending on your app, you might raise an error here to stop startup
+         # raise RuntimeError("Failed to initialize TextProcessor models due to missing libraries") from ie
+    except OSError as e:
+        log.exception(f"FATAL: Failed to load NLP models (likely not downloaded): {e}")
+        log.error(f"Ensure models are downloaded (e.g., python -m spacy download {SPACY_MODEL_NAME})")
+        MODELS_LOADED = False
+        # raise RuntimeError("Failed to initialize TextProcessor models") from e
     except Exception as e:
-        log.error(f"Failed to initialize FastCoref model on {device.upper()}: {e}")
-        if device != 'cpu':
-            log.warning("Attempting fallback to CPU for FastCoref.")
-            try: device = 'cpu'; FC_MODEL = FCoref(model_name_or_path=FASTCOREF_MODEL_NAME, device=device); log.info(f"FastCoref model '{FASTCOREF_MODEL_NAME}' initialized on CPU.")
-            except Exception as e2: log.error(f"Failed fallback FastCoref init on CPU: {e2}"); return False
-        else: return False
-    return True
+        log.exception(f"FATAL: An unexpected error occurred loading NLP models: {e}")
+        MODELS_LOADED = False
+        # raise RuntimeError("Failed to initialize TextProcessor models") from e
 
-# --- Neo4j Driver Setup/Teardown ---
-def setup_neo4j(uri: str, user: str, password: Optional[str]):
-    # (Implementation remains the same)
-    global NEO4J_DRIVER
-    if NEO4J_DRIVER is not None: log.warning("Neo4j driver already initialized."); return True
-    try:
-        NEO4J_DRIVER = GraphDatabase.driver(uri, auth=(user, password))
-        NEO4J_DRIVER.verify_connectivity(); log.info(f"Neo4j driver initialized for {uri}.")
-        return True
-    except (AuthError, ServiceUnavailable) as e: log.error(f"Neo4j connection/auth error: {e}."); NEO4J_DRIVER = None; return False
-    except Exception as e: log.error(f"Unexpected Neo4j driver init error: {e}"); NEO4J_DRIVER = None; return False
+    # --- Methods now access models via TextProcessor.nlp or TextProcessor.fc_model ---
 
-def close_neo4j():
-    # (Implementation remains the same)
-    global NEO4J_DRIVER
-    if NEO4J_DRIVER:
-        try: NEO4J_DRIVER.close(); log.info("Global Neo4j driver closed.")
-        except Exception as e: log.error(f"Error closing Neo4j driver: {e}")
-        finally: NEO4J_DRIVER = None
-    else: log.info("No active global Neo4j driver to close.")
+    @staticmethod
+    def extract_entities(text: str) -> Dict[str, str]:
+        """Extract named entities with spaCy"""
+        if not TextProcessor.MODELS_LOADED:
+             log.error("Cannot extract entities, models not loaded.")
+             return {}
+        # Access class attribute nlp
+        doc = TextProcessor.nlp(text)
+        return {ent.text.strip(): ent.label_ for ent in doc.ents}
 
-# --- NLTK WordNet Check ---
-def check_wordnet():
-    # (Implementation remains the same)
-    try: wordnet.synsets('computer'); log.info("WordNet data found.")
-    except LookupError:
-        log.info("Downloading NLTK WordNet data...");
-        try: nltk.download('wordnet'); log.info("WordNet download complete."); wordnet.synsets('computer')
-        except Exception as download_e: log.error(f"Failed WordNet download/access: {download_e}")
-    except Exception as e: log.error(f"WordNet check error: {e}")
+    @staticmethod
+    def resolve_coreferences(text: str) -> Dict[str, str]:
+        """Resolve coreferences with FastCoref"""
+        if not TextProcessor.MODELS_LOADED:
+            log.error("Cannot resolve coreferences, models not loaded.")
+            return {}
+        try:
+            if not text.strip(): return {}
+            # Access class attribute fc_model
+            preds = TextProcessor.fc_model.predict(texts=[text])
+            if not preds or not preds[0]: return {}
+            coref_map = {}
+            clusters = preds[0].get_clusters(as_strings=True)
+            # log.info(f"FastCoref found {len(clusters)} clusters.") # Reduce log noise maybe
+            for cluster in clusters:
+                if not cluster: continue
+                main_entity = cluster[0]
+                for mention in cluster:
+                    coref_map[mention] = main_entity
+            return coref_map
+        except Exception as e:
+            log.error(f"FastCoref prediction failed: {e}")
+            return {}
 
-# --- Core NLP Helper Functions ---
-# (All NLP functions remain the same - ensure they are present in your file)
-def get_verb_synset_lemma(verb_token):
-    if not verb_token or verb_token.pos_ != "VERB": return None
-    verb_lemma = verb_token.lemma_
-    try:
-        synsets = wordnet.synsets(verb_lemma, pos=wordnet.VERB)
-        if synsets: normalized = synsets[0].lemmas()[0].name(); return normalized.replace('_', '').upper()
-        else: return verb_lemma.upper()
-    except Exception as e: log.warning(f"WordNet error for '{verb_lemma}': {e}. Falling back."); return verb_lemma.upper()
+    @staticmethod
+    def _get_entity_span_text(token: Token, doc: Doc, coref_map: Dict[str, str]) -> Optional[str]:
+        """Helper to get resolved entity text (uses doc, no direct model access needed)."""
+        # This method doesn't directly call nlp or fc_model, uses the passed 'doc'
+        resolved_text = None
+        original_text = None
+        entity_span = next((ent for ent in doc.ents if ent.start <= token.i < ent.end), None)
+        if entity_span:
+            original_text = entity_span.text.strip()
+        else:
+            subtree_span = doc[token.left_edge.i : token.right_edge.i + 1]
+            original_text = subtree_span.text.strip()
+        if not original_text: return None
+        resolved_text = coref_map.get(original_text, original_text)
+        # Optional logging moved to extract_relations for context
+        # if resolved_text != original_text: log.info(f"COREFERENCE APPLIED: '{original_text}' -> '{resolved_text}'")
+        return resolved_text
 
-def build_coref_map(text: str, clusters_indices: List[List[Tuple[int, int]]]) -> Dict[int, str]:
-    char_coref_mapping = {}
-    if not clusters_indices: return char_coref_mapping
-    for cluster in clusters_indices:
-        if not cluster: continue
-        rep_start_char, rep_end_char = cluster[0]; rep_text = text[rep_start_char:rep_end_char].strip()
-        for mention_start_char, mention_end_char in cluster: char_coref_mapping[mention_start_char] = rep_text
-    return char_coref_mapping
+    @staticmethod
+    def extract_relations(
+        text: str,
+        coref_map: Dict[str, str],
+        entities: Dict[str, str]
+    ) -> List[Tuple[str, str, str, Dict[str, Any]]]:
+        """Extract filtered relationships."""
+        if not TextProcessor.MODELS_LOADED:
+            log.error("Cannot extract relations, models not loaded.")
+            return []
 
-def refine_coref_map_with_entities(initial_char_coref_map: Dict[int, str], initial_entities: Dict[str, str]) -> Dict[int, str]:
-    refined_map = initial_char_coref_map.copy(); entity_names = sorted(list(initial_entities.keys()), key=len); long_name_to_short = {}
-    current_rep_texts = set(initial_char_coref_map.values())
-    for long_name in current_rep_texts:
-        is_potentially_descriptive = (',' in long_name or len(long_name) > 35); is_not_direct_entity = (long_name not in initial_entities)
-        if is_potentially_descriptive or is_not_direct_entity:
-            best_match = None
-            for short_name in entity_names:
-                if short_name in long_name and len(short_name) >= 3: best_match = short_name; break
-            if best_match: long_name_to_short[long_name] = best_match
-    final_refined_map = {};
-    for char_idx, mapped_text in initial_char_coref_map.items(): final_refined_map[char_idx] = long_name_to_short.get(mapped_text, mapped_text)
-    return final_refined_map
+        # Access class attribute nlp
+        doc = TextProcessor.nlp(text)
+        relations = []
+        # log.info(f"Starting relation extraction...") # Reduce log noise
 
-def get_span_resolved_text(span, refined_char_coref_map: Dict[int, str]) -> Optional[str]:
-    if not span: return None; return refined_char_coref_map.get(span.start_char, span.text.strip())
+        # --- Relation extraction logic ---
+        for token in doc:
+            if token.pos_ != "VERB": continue
 
-def get_token_resolved_text(token, refined_char_coref_map: Dict[int, str]) -> Optional[str]:
-     if not token: return None; return refined_char_coref_map.get(token.idx, token.text.strip())
+            subj_token, obj_token, prep_for_rel = None, None, None
+            rel_base = token.lemma_.upper()
 
-def get_entity_span_for_token(token, doc):
-    if token.ent_type_:
-        for ent in doc.ents:
-            if token.i >= ent.start and token.i < ent.end: return ent
-    return None
+            # Passive check
+            passive_subj = next((c for c in token.children if c.dep_ == "nsubjpass"), None)
+            if passive_subj:
+                obj_token = passive_subj
+                agent = next((c for c in token.children if c.dep_ == "agent"), None)
+                if agent: subj_token = next((gc for gc in agent.children if gc.dep_ == "pobj"), None)
 
-def extract_relation_attributes(verb_token) -> Dict[str, Any]:
-    attributes = {};
-    for child in verb_token.children:
-        dep = child.dep_; text_lower = child.text.lower()
-        if dep == 'prep' and text_lower in ['in', 'on', 'at', 'during', 'since', 'until', 'before', 'after']:
-            for grandchild in child.children:
-                if grandchild.dep_ == 'pobj':
-                    ent_span = get_entity_span_for_token(grandchild, grandchild.doc)
-                    if ent_span and ent_span.label_ in ['DATE', 'TIME']: attributes['time'] = ent_span.text.strip(); break
-                    elif grandchild.like_num and len(grandchild.text) == 4 and grandchild.text.isdigit(): attributes['time'] = grandchild.text.strip(); break
-        elif dep == 'advmod' and child.ent_type_ in ['DATE', 'TIME']:
-             ent_span = get_entity_span_for_token(child, child.doc);
-             if ent_span: attributes['time'] = ent_span.text.strip()
-        elif dep == 'prep' and text_lower in ['in', 'at', 'on', 'near', 'from', 'to', 'within', 'based_in']:
-             for grandchild in child.children:
-                 if grandchild.dep_ == 'pobj':
-                    ent_span = get_entity_span_for_token(grandchild, grandchild.doc)
-                    if ent_span and ent_span.label_ in ['GPE', 'LOC', 'FAC']: attributes['location'] = ent_span.text.strip(); break
-        elif dep == 'advmod' and child.ent_type_ in ['GPE', 'LOC', 'FAC']:
-             ent_span = get_entity_span_for_token(child, child.doc);
-             if ent_span: attributes['location'] = ent_span.text.strip()
-        elif dep == 'advmod' and child.pos_ == 'ADV': attributes.setdefault('manner', []).append(child.text.strip())
-    if 'manner' in attributes: attributes['manner'] = " ".join(attributes['manner'])
-    return attributes
+            # Active check (if passive incomplete)
+            if not subj_token or not obj_token:
+                active_subj = next((c for c in token.children if c.dep_ == "nsubj"), None)
+                if active_subj:
+                    if not subj_token: subj_token = active_subj
+                    # Find Object (prioritized)
+                    dobj = next((c for c in token.children if c.dep_ == "dobj"), None)
+                    pobj_info = next(((gc, p.text.upper()) for p in token.children if p.dep_ == "prep" for gc in p.children if gc.dep_ == "pobj"), None)
+                    dative = next((c for c in token.children if c.dep_ == "dative"), None)
+                    temp_obj_token = None
+                    if dobj: temp_obj_token = dobj
+                    elif pobj_info: temp_obj_token, prep_for_rel = pobj_info
+                    elif dative: temp_obj_token = dative
+                    if not obj_token and temp_obj_token: obj_token = temp_obj_token
 
-def extract_enhanced_relationships(doc, refined_char_coref_map: Dict[int, str]) -> List[Tuple[str, str, str, Dict[str, Any]]]:
-    # (Implementation remains the same)
-    relationships = []; processed_verbs = set()
-    for token in doc:
-        if token.i in processed_verbs: continue
-        if token.pos_ == "VERB":
-            subject_token = None; object_token = None; passive = False; main_verb_token = token; prep_text = None
-            potential_subjects = [child for child in token.children if "subj" in child.dep_]
-            if potential_subjects: subject_token = potential_subjects[0];
-            if subject_token and subject_token.dep_ == "nsubjpass": passive = True
-            elif token.dep_ in ["aux", "auxpass", "xcomp", "ccomp", "advcl"] and token.head.pos_ == "VERB":
-                 main_verb_token = token.head; processed_verbs.add(main_verb_token.i)
-                 potential_head_subjects = [child for child in main_verb_token.children if "subj" in child.dep_]
-                 if potential_head_subjects: subject_token = potential_head_subjects[0];
-                 if subject_token and subject_token.dep_ == "nsubjpass": passive = True
-            if not subject_token: continue
-            if main_verb_token.dep_ in ["aux", "auxpass"]: continue
-            potential_objects = []
-            for child in main_verb_token.children:
-                dep = child.dep_
-                if dep == "dobj": potential_objects.append((child, None)); break
-                elif dep in ["attr", "oprd"]: potential_objects.append((child, None)); break
-                elif dep == "prep":
-                    current_prep = child.text.lower()
-                    for grandchild in child.children:
-                        if grandchild.dep_ == "pobj": potential_objects.append((grandchild, current_prep))
-                elif passive and dep == "agent":
-                    for grandchild in child.children:
-                        if grandchild.dep_ == "pobj": object_token = subject_token; subject_token = grandchild; passive = False; potential_objects = []; break
-                    if object_token: break
-            if not object_token and potential_objects: object_token, prep_text = potential_objects[0]
-            if not object_token: continue
-            subj_span_or_token = get_entity_span_for_token(subject_token, doc) or subject_token
-            obj_span_or_token = get_entity_span_for_token(object_token, doc) or object_token
-            resolved_subj = get_span_resolved_text(subj_span_or_token, refined_char_coref_map) if isinstance(subj_span_or_token, spacy.tokens.Span) else get_token_resolved_text(subj_span_or_token, refined_char_coref_map)
-            resolved_obj = get_span_resolved_text(obj_span_or_token, refined_char_coref_map) if isinstance(obj_span_or_token, spacy.tokens.Span) else get_token_resolved_text(obj_span_or_token, refined_char_coref_map)
-            if not resolved_subj: resolved_subj = subject_token.text.strip()
-            if not resolved_obj: resolved_obj = object_token.text.strip()
-            relation_phrase = get_verb_synset_lemma(main_verb_token) or main_verb_token.lemma_.upper()
-            if prep_text: relation_phrase = f"{relation_phrase}_{prep_text.upper()}"
-            else:
-                 for child in main_verb_token.children:
-                      if child.dep_ == 'prt': relation_phrase = f"{relation_phrase}_{child.text.upper()}"; break
-            attributes = extract_relation_attributes(main_verb_token)
-            if resolved_subj and resolved_obj and resolved_subj.lower() != resolved_obj.lower():
-                rel_tuple = (resolved_subj, relation_phrase, resolved_obj, attributes); relationships.append(rel_tuple)
-    log.info(f"Extracted {len(relationships)} potential relationships."); return relationships
+            # Resolve, Filter, Store
+            if subj_token and obj_token:
+                subj_resolved = TextProcessor._get_entity_span_text(subj_token, doc, coref_map)
+                obj_resolved = TextProcessor._get_entity_span_text(obj_token, doc, coref_map)
 
-def extract_final_entities(doc, refined_char_coref_map: Dict[int, str]) -> Dict[str, str]:
-    # (Implementation remains the same)
-    entities = {}; log.info("Extracting final entities (NER + Refined Coref)...")
-    for ent in doc.ents:
-        resolved_name = refined_char_coref_map.get(ent.start_char, ent.text.strip()); label = ent.label_
-        if resolved_name not in entities: entities[resolved_name] = label
-        elif entities[resolved_name] != label: log.warning(f"Conflicting labels for '{resolved_name}'. Keeping '{entities[resolved_name]}', ignoring '{label}'.")
-    log.info(f"Found {len(entities)} unique final entities."); return entities
+                if not subj_resolved or not obj_resolved: continue
+                if subj_resolved == obj_resolved: continue
 
-# --- Main Processing Function ---
-def process_text_to_graph_components(text: str) -> Tuple[Dict[str, str], List[Tuple[str, str, str, Dict[str, Any]]]]:
-    # (Implementation remains the same)
-    global NLP, FC_MODEL
-    if not NLP or not FC_MODEL: log.error("NLP models not loaded."); return {}, []
-    if not text or not text.strip(): log.warning("Input text is empty."); return {}, []
-    stripped_text = text.strip(); log.info(f"Processing text starting with: '{stripped_text[:100]}...'")
-    doc = NLP(stripped_text)
-    initial_entities = {ent.text.strip(): ent.label_ for ent in doc.ents}; log.info(f"Initial NER found {len(initial_entities)} entity texts.")
-    try:
-        preds = FC_MODEL.predict(texts=[stripped_text]); result = preds[0]; clusters_indices = result.get_clusters(as_strings=False)
-        log.info(f"FastCoref found {len(clusters_indices)} clusters.")
-    except Exception as e: log.error(f"FastCoref prediction failed: {e}"); clusters_indices = []
-    initial_char_coref_map = build_coref_map(stripped_text, clusters_indices)
-    refined_char_coref_map = refine_coref_map_with_entities(initial_char_coref_map, initial_entities); log.info("Coreference map built/refined.")
-    final_entities = extract_final_entities(doc, refined_char_coref_map)
-    relationships = extract_enhanced_relationships(doc, refined_char_coref_map)
-    log.info("Text processing complete."); return final_entities, relationships
+                # Filtering Logic
+                subj_is_ner = subj_resolved in entities
+                obj_is_ner = obj_resolved in entities
 
-# --- Neo4j Interaction Function (NON-APOC version) ---
+                if subj_is_ner or obj_is_ner:
+                    # Log resolution if it happened for passed relations
+                    subj_orig = doc[subj_token.left_edge.i : subj_token.right_edge.i + 1].text.strip()
+                    obj_orig = doc[obj_token.left_edge.i : obj_token.right_edge.i + 1].text.strip()
+                    log_coref = ""
+                    if subj_resolved != subj_orig: log_coref += f" Subj: '{subj_orig}'->'{subj_resolved}'"
+                    if obj_resolved != obj_orig: log_coref += f" Obj: '{obj_orig}'->'{obj_resolved}'"
 
-def insert_graph_data_tx( # Use this NON-APOC version
-    entities: Dict[str, str],
-    relationships: List[Tuple[str, str, str, Dict[str, Any]]],
-    book_title: Optional[str] = None,
-    book_section: Optional[str] = None,
-    driver: Optional[Driver] = None
-) -> bool:
-    """
-    Connects to Neo4j (using global driver by default) and inserts entities
-    and relationships within a single transaction, using the non-APOC, ID-based approach.
+                    rel_type = f"{rel_base}_{prep_for_rel}" if prep_for_rel else rel_base
+                    attrs = {} # Attribute extraction logic...
+                    for child in token.children:
+                        if child.dep_ == "prep":
+                            prep_obj = next((gc for gc in child.children if gc.dep_ == "pobj"), None)
+                            if prep_obj:
+                                ent_span = next((ent for ent in doc.ents if ent.start <= prep_obj.i < ent.end), None)
+                                if ent_span:
+                                     if ent_span.label_ in ["DATE", "TIME"]: attrs["time"] = ent_span.text.strip()
+                                     elif ent_span.label_ in ["GPE", "LOC"]: attrs["location"] = ent_span.text.strip()
 
-    Args:
-        entities: Dictionary {entity_name: entity_label}.
-        relationships: List of (subj_name, rel_type, obj_name, attributes).
-        book_title: Optional title metadata for relationships.
-        book_section: Optional section metadata for relationships.
-        driver: Optional Neo4j Driver instance override.
+                    log.info(f"ADDING RELATION (Passed Filter): ('{subj_resolved}', '{rel_type}', '{obj_resolved}', {attrs}){log_coref}")
+                    relations.append((subj_resolved, rel_type, obj_resolved, attrs))
+                # else: # Log filtered out relations if needed (can be noisy)
+                #    log.debug(f"Relation FILTERED OUT (Neither endpoint NER): ('{subj_resolved}', '{obj_resolved}')")
 
-    Returns:
-        True if the transaction was successful, False otherwise.
-    """
-    active_driver = driver if driver else NEO4J_DRIVER
-    if not active_driver:
-        log.error("Neo4j driver not available. Cannot insert graph data.")
-        return False
+        return relations
 
-    log.info(f"Attempting to insert {len(entities)} entities and {len(relationships)} relationships into Neo4j (using non-APOC method)...")
+    # --- generate_upsert_queries (No changes needed) ---
+    @staticmethod
+    def generate_upsert_queries(
+        entities: Dict[str, str],
+        relationships: List[Tuple[str, str, str, Dict[str, Any]]],
+        additional_attributes: Optional[Dict[str, Any]] = None,
+        book_title: Optional[str] = None,
+        book_section: Optional[str] = None
+    ) -> List[Tuple[str, Dict[str, Any]]]:
+         # ... (Same implementation as the previous answer) ...
+        queries = []
+        base_attrs = additional_attributes or {}
+        node_names = set(entities.keys())
+        for subj, _, obj, _ in relationships:
+            node_names.add(subj)
+            node_names.add(obj)
+        for name in node_names:
+            if not name: continue
+            label = entities.get(name, "Concept")
+            safe_label = f"`{label}`" if not label.isalnum() else label
+            node_attrs = base_attrs.copy(); query_params = {"name": name}
+            if book_title: node_attrs['book_title'] = book_title
+            query_params["node_attrs"] = node_attrs
+            mention_update_clause = ""
+            if book_section:
+                query_params["book_section"] = book_section
+                mention_update_clause = "n.mentions = CASE WHEN n.mentions IS NULL THEN [$book_section] WHEN NOT $book_section IN n.mentions THEN n.mentions + $book_section ELSE n.mentions END"
+            queries.append((f"""MERGE (n:{safe_label} {{name: $name}}) ON CREATE SET n+= $node_attrs, n.created_at = datetime(), n._source='text_import' {', '+mention_update_clause if mention_update_clause else ''} ON MATCH SET n.last_updated=datetime(), n+= $node_attrs {', '+mention_update_clause if mention_update_clause else ''}""",query_params))
+        for subj, rel, obj, attrs in relationships:
+             if not subj or not obj or not rel: continue
+             safe_rel = re.sub(r'[^a-zA-Z0-9_]', '_', rel).upper()[:60]
+             if not safe_rel: continue
+             rel_attrs = attrs.copy(); rel_attrs.update(base_attrs)
+             if book_title: rel_attrs['book_title'] = book_title
+             if book_section: rel_attrs['book_section'] = book_section
+             query_params = {"subj": subj, "obj": obj, "attrs": rel_attrs}
+             on_match_updates = []
+             if book_section: query_params["book_section"] = book_section; on_match_updates.append("r.book_section = $book_section")
+             if book_title: query_params["book_title"] = book_title; on_match_updates.append("r.book_title = $book_title")
+             if "time" in attrs: query_params["time"] = attrs["time"]; on_match_updates.append("r.time = $time")
+             if "location" in attrs: query_params["location"] = attrs["location"]; on_match_updates.append("r.location = $location")
+             on_match_clause = ", ".join(on_match_updates)
+             queries.append((f"""MATCH (a {{name: $subj}}), (b {{name: $obj}}) MERGE (a)-[r:`{safe_rel}`]->(b) ON CREATE SET r = $attrs, r.created_at = datetime(), r._source = 'text_import' ON MATCH SET r += $attrs, r.last_updated = datetime() {', '+on_match_clause if on_match_clause else ''}""", query_params))
+        return queries
 
-    # Define the transaction function
-    def create_nodes_and_relationships_tx_func(tx):
-        entity_nodes: Dict[str, Node] = {} # Map entity name to Neo4j Node object
-        default_label = "Resource" # Fallback label
-        node_merge_count = 0
-        rel_merge_count = 0
-        skipped_rel_count = 0
 
-        # 1. Merge Nodes and store Node objects
-        log.debug("--- Transaction: Merging Entity Nodes ---")
-        if not isinstance(entities, dict):
-             log.error(f"Entities data is not a dictionary: {type(entities)}. Aborting transaction.")
-             raise TypeError("Entities must be a dictionary.") # Abort
+    # --- process_text_to_neo4j (No structural changes needed, uses class methods) ---
+    @classmethod
+    def process_text_to_neo4j(
+        cls,
+        text: str,
+        database: str = "neo4j",
+        additional_attributes: Optional[Dict[str, Any]] = None,
+        book_title: Optional[str] = None,
+        book_section: Optional[str] = None
+    ) -> bool:
+        """Complete text processing pipeline."""
+        if not cls.MODELS_LOADED:
+             log.error("Cannot process text, models failed to load during initialization.")
+             return False
+        if not text or not text.strip():
+            log.warning("Input text is empty or whitespace only. Skipping processing.")
+            return False
 
-        for entity_name, entity_label in entities.items():
-            if not isinstance(entity_name, str) or not isinstance(entity_label, str):
-                 log.warning(f"Skipping invalid entity entry: Name='{entity_name}' ({type(entity_name)}), Label='{entity_label}' ({type(entity_label)})")
-                 continue
+        try:
+            # Calls now correctly use methods that access class attributes for models
+            entities = cls.extract_entities(text)
+            log.info(f"Extracted {len(entities)} named entities: {list(entities.keys())}")
 
-            label = entity_label if entity_label else default_label
-            label_cypher = f"`{label}`" if not label.isalnum() else label # Basic label escaping
+            coref_map = cls.resolve_coreferences(text)
+            log.info(f"Resolved {len(coref_map)} coreference mentions.")
 
-            try:
-                query = f"MERGE (n:{label_cypher} {{name: $name}}) RETURN n"
-                result = tx.run(query, name=entity_name)
-                record = result.single()
+            relations = cls.extract_relations(text, coref_map, entities)
+            log.info(f"Found {len(relations)} relations AFTER filtering.")
 
-                if record and record['n']:
-                    node_object = record['n']
-                    entity_nodes[entity_name] = node_object
-                    node_merge_count +=1
-                    #log.debug(f"Merged node: Name='{entity_name}', ID={node_object.id}")
+            queries = cls.generate_upsert_queries(
+                entities, relations, additional_attributes, book_title, book_section
+            )
+            log.info(f"Generated {len(queries)} Cypher queries for upsert.")
+
+            # Query execution loop
+            success_count, failure_count = 0, 0
+            for i, (query, params) in enumerate(queries):
+                if execute_query(query, params, database):
+                    success_count += 1
                 else:
-                    log.warning(f"No node object returned for entity '{entity_name}' during MERGE.")
+                    failure_count += 1
+                    log.error(f"Failed executing Query {i+1}/{len(queries)}") # Params can be large, logged elsewhere if needed
 
-            except Exception as e:
-                log.error(f"Error merging node '{entity_name}' with label '{label}': {e}")
-                raise # Abort transaction on error
+            log.info(f"Query execution completed. Success: {success_count}, Failed: {failure_count}.")
+            return failure_count == 0
 
-        log.debug(f"--- Transaction: Merged {node_merge_count} nodes ---")
+        except Exception as e:
+            # Log the exception that occurs *during* processing
+            log.exception(f"Processing failed unexpectedly in process_text_to_neo4j: {str(e)}")
+            return False
 
-        # 2. Merge Relationships using Node IDs
-        log.debug(f"--- Transaction: Merging {len(relationships)} Relationships ---")
-        if not isinstance(relationships, list):
-            log.error(f"Relationships data is not a list: {type(relationships)}. Aborting transaction.")
-            raise TypeError("Relationships must be a list.") # Abort
-
-        for rel_data in relationships:
-            # Basic check for tuple structure
-            if not isinstance(rel_data, tuple) or len(rel_data) != 4:
-                log.warning(f"Skipping invalid relationship entry (not a 4-tuple): {rel_data}")
-                skipped_rel_count += 1
-                continue
-
-            subj_name, rel_type, obj_name, attributes = rel_data
-
-            # Type checks for relationship components
-            if not isinstance(subj_name, str) or not isinstance(rel_type, str) or not isinstance(obj_name, str) or not isinstance(attributes, dict):
-                 log.warning(f"Skipping invalid relationship entry (type mismatch): Subj='{subj_name}'({type(subj_name)}), Type='{rel_type}'({type(rel_type)}), Obj='{obj_name}'({type(obj_name)}), Attrs='{attributes}'({type(attributes)})")
-                 skipped_rel_count += 1
-                 continue
-
-            # Sanitize relationship type
-            sanitized_rel_type = re.sub(r'[^a-zA-Z0-9_]+', '_', rel_type).upper()
-            if not sanitized_rel_type or not re.match(r'^[A-Z_][A-Z0-9_]*$', sanitized_rel_type):
-                 log.warning(f"Skipping relationship due to invalid type after sanitization: Original='{rel_type}', Sanitized='{sanitized_rel_type}'")
-                 skipped_rel_count += 1
-                 continue
-
-            if subj_name in entity_nodes and obj_name in entity_nodes:
-                subj_node = entity_nodes[subj_name]
-                obj_node = entity_nodes[obj_name]
-
-                rel_props = attributes.copy() # Use provided attrs
-                if book_title: rel_props['book_title'] = book_title
-                if book_section: rel_props['book_section'] = book_section
-
-                try:
-                    # Use `MERGE` on relationship, MATCH nodes by ID
-                    # Escape relationship type with backticks
-                    query = f"""
-                    MATCH (a) WHERE id(a) = $subject_id
-                    MATCH (b) WHERE id(b) = $object_id
-                    MERGE (a)-[r:`{sanitized_rel_type}`]->(b)
-                    ON CREATE SET r = $attributes
-                    ON MATCH SET r += $attributes
-                    RETURN id(r)
-                    """
-                    result = tx.run(
-                        query,
-                        subject_id=subj_node.id,
-                        object_id=obj_node.id,
-                        attributes=rel_props # Pass combined attributes
-                    )
-                    # Consume result to check if relationship was created/merged
-                    summary = result.consume()
-                    if summary.counters.relationships_created > 0 or summary.counters.properties_set > 0:
-                         rel_merge_count += 1
-                    #log.debug(f"Merged relationship: ({subj_name})-[{sanitized_rel_type}]->({obj_name})")
-
-                except Exception as e:
-                    log.error(f"Error merging relationship ({subj_name})-[{sanitized_rel_type}]->({obj_name}): {e}")
-                    skipped_rel_count += 1 # Skip this relationship on error
-
-            else:
-                missing = [n for n in [subj_name, obj_name] if n not in entity_nodes]
-                log.warning(f"Skipping relationship ({subj_name})--[{sanitized_rel_type}]-->({obj_name}) because node(s) not found: {missing}")
-                skipped_rel_count += 1
-
-        log.debug(f"Transaction merged {rel_merge_count} relationships, skipped {skipped_rel_count}.")
-        # No explicit return needed from tx function
-
-    # Execute the transaction using session.write_transaction
-    try:
-        with active_driver.session(database="neo4j") as session: # Specify DB name if needed
-            session.write_transaction(create_nodes_and_relationships_tx_func)
-        log.info(f"Neo4j graph update transaction successful.")
-        return True
-    except Exception as e:
-        log.error(f"Neo4j session or transaction failed overall: {e}")
-        # import traceback
-        # log.error(traceback.format_exc()) # Uncomment for full traceback
-        return False
-
-
-# --- High-Level Workflow Function ---
-def process_text_and_insert_graph(
-    text: str,
-    book_title: Optional[str] = None,
-    book_section: Optional[str] = None,
-    neo4j_driver_instance: Optional[Driver] = None
-) -> bool:
-    """
-    High-level function using the non-APOC insertion logic.
-    """
-    try:
-        entities, relationships = process_text_to_graph_components(text)
-        if not entities and not relationships:
-            log.info("No entities or relationships extracted. Nothing to insert.")
-            return True
-        # Call the NON-APOC insertion function
-        success = insert_graph_data_tx(
-            entities, relationships, book_title, book_section, driver=neo4j_driver_instance
-        )
-        return success
-    except Exception as e:
-        log.exception(f"Error in process_text_and_insert_graph workflow: {e}")
-        return False
-
-# (Ensure rest of file with NLP functions etc. is present)
+# --- End of TextProcessor Class ---
