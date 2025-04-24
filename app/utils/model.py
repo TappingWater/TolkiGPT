@@ -2,11 +2,12 @@ import spacy
 from fastcoref import FCoref
 import subprocess
 import sys
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 from app.utils import log_info,log_error, log_debug, log_warning
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import app.config as config
+from peft import PeftModel
 
 _spacy_nlp: Optional[spacy.Language] = None
 _coref_model: Optional[FCoref] = None
@@ -14,12 +15,52 @@ _gen_tokenizer: Optional[Any] = None
 _gen_model: Optional[Any] = None
 _models_initialized: bool = False 
 
-def _load_gen_model(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-    model.to(config.DEFAULT_INFERENCE_DEVICE)
-    model.eval()
-    return tokenizer, model
+_spacy_nlp: Optional[spacy.Language] = None
+_coref_model: Optional[FCoref] = None
+_gen_tokenizer: Optional[Any] = None
+_gen_model: Optional[Any] = None
+_models_initialized: bool = False
+
+def _load_gen_model(
+    base_model_name_or_path: str,
+    adapter_name_or_path: str
+) -> Tuple[Optional[Any], Optional[Any]]:
+    log_info(f"Attempting to load generative model: Base='{base_model_name_or_path}', Adapter='{adapter_name_or_path}'")
+    try:
+        log_debug(f"Loading base model '{base_model_name_or_path}'...")
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_name_or_path,
+            torch_dtype=torch.float16, 
+            device_map=config.DEFAULT_INFERENCE_DEVICE,       
+            trust_remote_code=True    
+        )
+        log_info(f"Base model '{base_model_name_or_path}' loaded.")
+        log_debug(f"Loading tokenizer from adapter location '{adapter_name_or_path}'...")
+        # Load tokenizer from the adapter path/ID - it might contain specific tokens/config
+        tokenizer = AutoTokenizer.from_pretrained(adapter_name_or_path)
+        # Set pad token if it's not set (common issue)
+        if tokenizer.pad_token is None:
+            log_warning("Tokenizer pad_token not set. Using eos_token as pad_token.")
+            tokenizer.pad_token = tokenizer.eos_token
+            # If you modified the base model's tokenizer during finetuning,
+            # you might need to resize embeddings:
+            # base_model.resize_token_embeddings(len(tokenizer))
+        log_info(f"Tokenizer loaded from '{adapter_name_or_path}'.")
+        log_debug(f"Applying PEFT adapter '{adapter_name_or_path}' to base model...")
+        # Load the PEFT model - this applies the adapter weights to the base model
+        model = PeftModel.from_pretrained(base_model, adapter_name_or_path)
+        model.eval() # Set the combined model to evaluation mode
+        log_info(f"PEFT adapter '{adapter_name_or_path}' applied successfully.")
+        # No need for model.to() if device_map="auto" was used
+        log_info(f"Generative model ready on device(s): {model.device if hasattr(model, 'device') else 'Multiple (device_map used)'}")
+        return tokenizer, model
+
+    except ImportError as ie:
+         log_error(f"Missing libraries for PEFT/Transformers. Ensure 'peft', 'transformers', 'torch', 'accelerate', 'bitsandbytes' are installed. Error: {ie}", exc_info=False)
+         return None, None
+    except Exception as e:
+        log_error(f"Failed to load generative model (Base: '{base_model_name_or_path}', Adapter: '{adapter_name_or_path}').", exc_info=True)
+        return None, None
 
 def _load_spacy_model(model_name: str) -> Optional[spacy.Language]:
     """
@@ -83,21 +124,25 @@ def _load_coref_model(model_name_or_path: str, device: str) -> Optional[FCoref]:
 def initialize_models(
     spacy_model_name,
     fastcoref_model_name,
-    gen_model_name,
+    gen_base_model_name,
+    gen_adapter_name,
     device
 ):
     """
     Loads both models and stores them in module-level variables.
     This function is called automatically when the module is imported.
     """
-    global _spacy_nlp, _coref_model, _models_initialized
+    global _spacy_nlp, _coref_model, _gen_tokenizer, _gen_model, _models_initialized
     if _models_initialized:
         log_debug("Models already initialized.")
         return
     log_info("--- Initializing NLP models ---")
     _spacy_nlp = _load_spacy_model(spacy_model_name)
     _coref_model = _load_coref_model(fastcoref_model_name, device=device)
-    _gen_tokenizer, _gen_model = _load_gen_model(gen_model_name)
+    _gen_tokenizer, _gen_model = _load_gen_model(
+        base_model_name_or_path=gen_base_model_name,
+        adapter_name_or_path=gen_adapter_name,
+    )
     _models_initialized = True 
     
     # Log the overall outcome

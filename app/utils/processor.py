@@ -1,6 +1,7 @@
 import torch
 from .model import get_gen_model, get_gen_tokenizer
 import app.config as config
+from torch.cuda.amp import autocast
 
 def generate_paragraph(text):
     prompt = f"Generate the next paragraph for this story based by continuing the text from the previous paragraph: '''{text.strip()}'''"
@@ -11,7 +12,7 @@ def generate_paragraph(text):
     input_ids = inputs["input_ids"].to(device)
     attention_mask = inputs["attention_mask"].to(device)
     with torch.no_grad():
-        with torch.autocast():
+        with autocast(device):
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,

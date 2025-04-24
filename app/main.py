@@ -21,7 +21,8 @@ async def lifespan(app: FastAPI):
     utils.initialize_models(
         spacy_model_name=config.DEFAULT_SPACY_MODEL,
         fastcoref_model_name=config.DEFAULT_COREF_MODEL,
-        gen_model_name=config.DEFAULT_GEN_MODEL,
+        gen_base_model_name=config.DEFAULT_GEN_MODEL,
+        gen_adapter_name=config.DEFAULT_GEN_ADAPTER,
         device=config.DEFAULT_INFERENCE_DEVICE
     )
     yield

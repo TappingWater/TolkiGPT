@@ -17,7 +17,8 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 # --- Configuration (can be changed before calling initialization/getters if needed) ---
 DEFAULT_SPACY_MODEL = os.getenv("SPACY_MODEL", "en_core_web_lg")
 DEFAULT_COREF_MODEL = os.getenv("COREF_MODEL", "biu-nlp/f-coref")
-DEFAULT_GEN_MODEL = os.getenv("GEN_MODEL", "mrcedric98/falcon-rw-1b-finetuned")
-DEFAULT_INFERENCE_DEVICE = os.getenv("INFERENCE_DEVICE", "cpu")
+DEFAULT_GEN_MODEL = os.getenv("GEN_MODEL", "tiiuae/falcon-rw-1b")
+DEFAULT_GEN_ADAPTER = os.getenv("GEN_MODEL", "mrcedric98/falcon-rw-1b-finetuned")
+DEFAULT_INFERENCE_DEVICE = os.getenv("INFERENCE_DEVICE", "mps")
 
 PYTORCH_MODEL_PATH = os.getenv("PYTORCH_MODEL_PATH")

@@ -21,5 +21,5 @@ async def generate_paragraph(data: TextInput):
         next_paragraph = utils.generate_paragraph(data.text)
         return {"generated_paragraph": next_paragraph}
     except Exception as e:
-        utils.log.exception(f"Inference error: {e}")
+        utils.log_error(f"Inference error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate paragraph.")
