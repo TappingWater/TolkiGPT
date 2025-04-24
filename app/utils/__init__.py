@@ -15,7 +15,11 @@ from .model import (
 )
 
 from .processor import (
-    generate_paragraph
+    generate_paragraph,
+    extract_entities,
+    extract_relations,
+    resolve_coreferences,
+    format_graph_to_text
 )
 
 # Optional: Define __all__ to control 'from app.db import *' behavior
@@ -30,5 +34,9 @@ __all__ = [
     get_fastcoref_model,
     get_gen_tokenizer,
     get_gen_model,
-    generate_paragraph
+    generate_paragraph,
+    extract_entities,
+    extract_relations,
+    resolve_coreferences,
+    format_graph_to_text
 ]

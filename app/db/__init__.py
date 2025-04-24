@@ -3,7 +3,13 @@ from .neo4j import (
     NEO4J_DRIVER,          # The global driver variable
     init_neo4j_driver,     # The initialization function
     close_neo4j_driver,    # The closing function
-    execute_query          # The query execution function
+    execute_query,
+    generate_neo4j_queries,
+    process_relations_for_neo4j,
+    insert_relationships,
+    get_graph_data_for_book,
+    get_driver
+    # The query execution function
 )
 
 # Optional: Define __all__ to control 'from app.db import *' behavior
@@ -13,4 +19,9 @@ __all__ = [
     "init_neo4j_driver",
     "close_neo4j_driver",
     "execute_query",
+    generate_neo4j_queries,
+    process_relations_for_neo4j,
+    insert_relationships,
+    get_driver,
+    get_graph_data_for_book
 ]

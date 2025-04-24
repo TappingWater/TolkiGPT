@@ -6,3 +6,8 @@ class TextInput(BaseModel):
     text: str
     book_title: Optional[str] = None
     book_section: Optional[str] = None
+
+class StoryInput(BaseModel):
+    text: str
+    book_title: str
+    num_chapters: int
